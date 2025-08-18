@@ -1,22 +1,135 @@
-# app.py (properly indented & fixed)
+# app.py — per-user master files with basic auth (local)
 import streamlit as st
 import pandas as pd
 import numpy as np
-import glob
 import re
 import io
 import os
+import json
+import hashlib
 from datetime import datetime
-import xlsxwriter
 
-st.set_page_config(page_title="Momentum Weekly Uploader", layout="wide")
+# ----------------- CONFIG -----------------
+USERS_FILE = "users.json"   # stores {"username": "salt$hexdigest", ...}
+DATA_DIR = "."              # directory where user masters are stored (use absolute path if needed)
 
-st.title("Momentum Investing — Weekly Upload + Stats")
-st.markdown(
-    "Upload weekly Excel(s). The app keeps a master dataset, replaces any existing week with the same Week name, "
-    "recomputes pivot + stats (all, last 4, last 2) and lets you download the final Excel."
-)
+# ----------------- Utils: auth & users -----------------
+def load_users():
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
+def save_users(u):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(u, f, indent=2)
+
+def make_salt(nbytes=16):
+    return os.urandom(nbytes).hex()
+
+def hash_password(password: str, salt: str):
+    # returns hex digest of sha256(salt + password)
+    h = hashlib.sha256()
+    h.update((salt + password).encode("utf-8"))
+    return h.hexdigest()
+
+def create_user(username: str, password: str):
+    users = load_users()
+    username = username.lower()
+    if username in users:
+        return False, "Username already exists"
+    salt = make_salt()
+    users[username] = f"{salt}${hash_password(password, salt)}"
+    save_users(users)
+    return True, "Registered successfully"
+
+def authenticate_user(username: str, password: str):
+    users = load_users()
+    username = username.lower()
+    if username not in users:
+        return False
+    val = users[username]
+    if "$" not in val:
+        return False
+    salt, pw_hash = val.split("$", 1)
+    return hash_password(password, salt) == pw_hash
+
+def sanitize_username(username: str):
+    # keep lowercase alnum, dash, underscore
+    u = username.lower().strip()
+    u = re.sub(r"[^a-z0-9_-]", "_", u)
+    return u
+
+def user_master_path(username: str):
+    username = sanitize_username(username)
+    return os.path.join(DATA_DIR, f"master_{username}.xlsx")
+
+def atomic_save_excel(df: pd.DataFrame, path: str):
+    tmp = path + ".tmp"
+    df.to_excel(tmp, index=False)
+    os.replace(tmp, path)  # atomic on most OSes
+
+# ----------------- App UI: login/register -----------------
+st.set_page_config(page_title="Momentum Investing", layout="wide")
+st.title("Momentum Investing ")
+
+st.sidebar.header("Login / Register (required)")
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+users = load_users()
+
+mode = st.sidebar.radio("Action", ["Login", "Register"])
+
+if mode == "Register":
+    ru = st.sidebar.text_input("Choose username (alphanumeric, -, _ allowed)")
+    rp = st.sidebar.text_input("Choose password", type="password")
+    rp2 = st.sidebar.text_input("Confirm password", type="password")
+    if st.sidebar.button("Register"):
+        if not ru or not rp:
+            st.sidebar.warning("Enter username and password.")
+        elif rp != rp2:
+            st.sidebar.error("Passwords do not match.")
+        else:
+            ok, msg = create_user(ru, rp)
+            if ok:
+                st.sidebar.success(msg + ". You can now login.")
+            else:
+                st.sidebar.error(msg)
+    st.sidebar.markdown("---")
+    st.sidebar.info("This registers a local user on the server. For production, use OAuth or a proper auth provider.")
+
+else:  # Login
+    lu = st.sidebar.text_input("Username")
+    lp = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if not lu or not lp:
+            st.sidebar.warning("Provide username and password.")
+        else:
+            if authenticate_user(lu, lp):
+                st.session_state.user = sanitize_username(lu)
+                st.sidebar.success(f"Logged in as {st.session_state.user}")
+            else:
+                st.sidebar.error("Invalid credentials.")
+
+# If not logged in, show a message and stop here
+if not st.session_state.user:
+    st.info("You must register and login in the sidebar to access your private data.")
+    st.stop()
+
+# ----------------- After login: use per-user master file -----------------
+USERNAME = st.session_state.user
+MASTER_PATH = user_master_path(USERNAME)
+
+st.sidebar.markdown("---")
+st.sidebar.write(f"Signed in as **{USERNAME}**")
+st.sidebar.write("Your master file (private to you) will be:")
+st.sidebar.code(MASTER_PATH)
+
+# ----------------- Rest of your app (unchanged logic, but per-user master) -----------------
 # ---------- Utilities ----------
 def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -80,33 +193,6 @@ def compute_all_stats(pivot_df, sorted_week_cols, windows=[2,4]):
             df[f"count_positive_last{w}"] = (dd > 0).sum(axis=1)
     return df
 
-def load_master(path="master_data.xlsx"):
-    if os.path.exists(path):
-        try:
-            m = pd.read_excel(path)
-            return m
-        except Exception as e:
-            st.error(f"Failed to read existing master file: {e}")
-            return pd.DataFrame()
-    return pd.DataFrame()
-
-def save_master(df, path="master_data.xlsx"):
-    try:
-        df.to_excel(path, index=False)
-    except Exception as e:
-        st.error(f"Failed to save master file: {e}")
-
-def make_pivot_from_master(master_df):
-    master_df = clean_column_names(master_df)
-    if "Week" not in master_df.columns:
-        st.error("No 'Week' column found in master data.")
-        return pd.DataFrame()
-    if "Return over 1week" not in master_df.columns:
-        st.error("No 'Return over 1week' column found in master data.")
-        return pd.DataFrame()
-    pivot = master_df.pivot_table(index="Name", columns="Week", values="Return over 1week").reset_index()
-    return pivot
-
 # robust numeric cleaner for filters
 def clean_and_coerce_numeric(series: pd.Series):
     s = series.astype(str).fillna("").str.strip()
@@ -121,31 +207,55 @@ def clean_and_coerce_numeric(series: pd.Series):
     try:
         coerced.loc[is_percent] = coerced.loc[is_percent] / 100.0
     except Exception:
-        # if index misaligns, ignore percent conversion gracefully
         pass
     return coerced
 
-# ---------- App state / storage ----------
-MASTER_PATH = "master_data.xlsx"
-master_df = load_master(MASTER_PATH)
-if not master_df.empty:
-    master_df = clean_column_names(master_df)
+# ---------- Per-user master load/save ----------
+def load_master_for_user(path):
+    if os.path.exists(path):
+        try:
+            m = pd.read_excel(path)
+            return clean_column_names(m)
+        except Exception as e:
+            st.error(f"Failed to read your master file: {e}")
+            return pd.DataFrame()
+    return pd.DataFrame()
 
-st.sidebar.header("Master dataset")
-st.sidebar.write(f"Master file present: {'Yes' if not master_df.empty else 'No'}")
-if not master_df.empty:
-    st.sidebar.write(f"Rows in master: {len(master_df)}")
-    unique_weeks = sorted(master_df["Week"].dropna().unique(), key=extract_week_num) if "Week" in master_df.columns else []
-    st.sidebar.write(unique_weeks[:10])
+def save_master_for_user(df, path):
+    try:
+        df.to_excel(path, index=False)
+        print(f"✅ Master saved at {path} with shape {df.shape}")
+    except Exception as e:
+        print(f"❌ Failed to save master: {e}")
 
-# ---------- Upload UI ----------
+def make_pivot_from_master(master_df: pd.DataFrame):
+    # Require Name, Week, and Return over 1week
+    if "Name" not in master_df.columns or "Week" not in master_df.columns or "Return over 1week" not in master_df.columns:
+        return pd.DataFrame()
+
+    # Ensure numeric for returns
+    master_df["Return over 1week"] = clean_and_coerce_numeric(master_df["Return over 1week"])
+
+    # Pivot: each Name × Week → Return value
+    pivot = master_df.pivot_table(
+        index="Name",
+        columns="Week",
+        values="Return over 1week",
+        aggfunc="first"
+    ).reset_index()
+
+    return clean_column_names(pivot)
+
+# ---------- App functionality (same as before) ----------
+st.markdown("---")
 st.header("Upload weekly Excel file(s)")
-st.markdown(
-    "You can upload one or multiple Excel files. "
-    "If the app can detect the Week name from the filename it will use it; otherwise you can type the Week label below."
-)
+st.markdown("Upload one or more weekly Excel files. Each user's uploads are stored privately in their own master file.")
+
 uploaded_files = st.file_uploader("Upload .xlsx files", type=["xlsx"], accept_multiple_files=True)
-forced_week_label = st.text_input("If filename lacks Week label or you want to force a Week name for all uploads, enter it here (e.g. 'Week 17 - 23 Aug')", value="")
+forced_week_label = st.text_input("Force Week label for uploads (optional)", value="")
+
+# Load the user's master (private)
+master_df = load_master_for_user(MASTER_PATH)
 
 if st.button("Process Uploads"):
     if not uploaded_files:
@@ -155,8 +265,19 @@ if st.button("Process Uploads"):
         replaced_weeks = []
         for uploaded in uploaded_files:
             try:
-                df = pd.read_excel(uploaded)
-                df = clean_column_names(df)
+                # --- Load Excel robustly (all sheets) ---
+                dfs = pd.read_excel(uploaded, sheet_name=None)  # dict of {sheet_name: DataFrame}
+                df = None
+                for sheetname, sheetdf in dfs.items():
+                    sheetdf = clean_column_names(sheetdf)
+                    if "Name" in sheetdf.columns:   # pick the sheet with stock names
+                        df = sheetdf
+                        break
+                if df is None:
+                    st.error(f"No valid sheet with 'Name' column found in {uploaded.name}")
+                    continue
+
+                # --- Assign week label ---
                 filename = uploaded.name
                 week_label = extract_week_from_filename(filename)
                 if forced_week_label.strip():
@@ -164,12 +285,16 @@ if st.button("Process Uploads"):
                 if week_label is None:
                     week_label = os.path.splitext(filename)[0]
                 df["Week"] = week_label
+
+                # --- Replace existing week if already present ---
                 if not master_df.empty and "Week" in master_df.columns:
                     if week_label in master_df["Week"].values:
                         master_df = master_df[master_df["Week"] != week_label]
                         replaced_weeks.append(week_label)
+
                 new_rows.append(df)
                 st.success(f"Accepted {filename} as {week_label} ({len(df)} rows).")
+
             except Exception as e:
                 st.error(f"Failed to process {uploaded.name}: {e}")
 
@@ -177,22 +302,35 @@ if st.button("Process Uploads"):
             appended = pd.concat(new_rows, ignore_index=True)
             master_df = pd.concat([master_df, appended], ignore_index=True) if not master_df.empty else appended
             master_df = clean_column_names(master_df)
-            save_master(master_df, MASTER_PATH)
-            st.success(f"Master updated. Replaced weeks: {replaced_weeks}" if replaced_weeks else "Master updated (new weeks appended).")
-            try:
-                st.rerun()
-            except Exception:
-                try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
 
-# ---------- Main processing ----------
-st.header("Stats from master data")
+            # --- Debug before saving ---
+            st.write("Saving master with shape:", master_df.shape)
+            st.dataframe(master_df.head())
+
+            save_master_for_user(master_df, MASTER_PATH)
+
+            # --- Debug file existence ---
+            st.write("Saved master file:", MASTER_PATH, "Exists:", os.path.exists(MASTER_PATH))
+
+            st.success(
+                f"Your master updated. Replaced weeks: {replaced_weeks}" if replaced_weeks else "Master updated (new weeks appended)."
+            )
+            st.rerun()
+
+# ----------------- After reload -----------------
+st.header("Raw Data")
+
+# --- Debug after reload ---
+st.write("Loaded master path:", MASTER_PATH)
+st.write("Loaded master shape:", master_df.shape)
+if not master_df.empty:
+    st.dataframe(master_df.head())
+st.header("Stats from your private master")
 
 if master_df.empty:
-    st.info("No master data available yet. Upload weekly Excel files to begin.")
+    st.info("You have no data yet. Upload weekly Excel files to begin.")
 else:
+    # Detect fundamentals (same list)
     desired_fundamentals = [
         "Industry", "Market Capitalization", "YOY Quarterly profit growth",
         "YOY Quarterly sales growth", "QoQ Profits", "Profit growth 3Years",
@@ -202,8 +340,10 @@ else:
     fundamental_cols = [c for c in desired_fundamentals if c in master_df.columns]
 
     pivot_df = make_pivot_from_master(master_df)
+    
+    
     if pivot_df.empty:
-        st.error("Pivot creation failed — check 'Return over 1week' and 'Week' columns exist.")
+        st.error("Pivot creation failed — check your uploaded files contain 'Return over 1week' and 'Week' columns.")
     else:
         sorted_week_cols = get_sorted_week_columns(pivot_df.columns)
         if "Name" not in pivot_df.columns:
@@ -214,40 +354,30 @@ else:
             fundamentals = master_df.groupby("Name")[fundamental_cols].first().reset_index() if fundamental_cols else pd.DataFrame({"Name": pivot_with_stats["Name"]})
             final_df = pd.merge(fundamentals, pivot_with_stats, on="Name", how="left")
 
-            #st.subheader("Pivot + Stats (sample)")
-
-            # ---------- Sidebar filters for fundamentals ----------
-            st.sidebar.markdown("## Filters (Fundamentals)")
-            st.sidebar.write("Use these filters to narrow companies before viewing/downloading.")
+            # Sidebar filters (minimum-only numeric as you asked)
+            st.sidebar.markdown("## Filters (Your fundamentals)")
+            st.sidebar.write("Filters apply only to your data (private).")
             filtered_df = final_df.copy()
 
-            # If fundamental_cols exists and has items, create filters for them
-            # If fundamental_cols exists and has items, create filters for them
-            if 'fundamental_cols' in locals() and len(fundamental_cols) > 0:
+            if len(fundamental_cols) > 0:
                 for col in fundamental_cols:
                     if col not in final_df.columns:
                         continue
-
                     series = final_df[col]
                     coerced = clean_and_coerce_numeric(series)
                     num_non_na = coerced.dropna().shape[0]
                     unique_values = series.dropna().unique()
                     unique_count = len(unique_values)
 
-                    # NUMERIC: show a minimum-only input (filter value >= min_input)
                     if num_non_na > 0:
                         col_min = float(np.nanmin(coerced))
                         col_max = float(np.nanmax(coerced))
-                        # Display helpful label with sample range
                         label = f"{col} minimum (≥). available range: [{col_min}, {col_max}]"
-                        # Default to the minimum observed value
                         min_input = st.sidebar.number_input(label, value=col_min, format="%.6f")
-                        # Apply filter using cleaned numeric values
                         masked_vals = clean_and_coerce_numeric(filtered_df[col])
                         mask = masked_vals >= float(min_input)
                         filtered_df = filtered_df[mask.fillna(False)]
                     else:
-                        # CATEGORICAL / TEXT fallback (unchanged)
                         if unique_count <= 50:
                             options = sorted([str(x) for x in unique_values if pd.notna(x)])
                             chosen = st.sidebar.multiselect(f"{col} (select)", options=options, default=options)
@@ -260,68 +390,49 @@ else:
             else:
                 st.sidebar.write("No fundamental columns detected to filter.")
 
-            # Reset filters button
             if st.sidebar.button("Reset filters"):
-                try:
-                    st.rerun()
-                except Exception:
-                    try:
-                        st.experimental_rerun()
-                    except Exception:
-                        pass
+                st.experimental_rerun()
 
-            st.write(f"Filtered rows: {len(filtered_df)} (after applying sidebar filters)")
+            st.write(f"Filtered rows (private): {len(filtered_df)}")
             st.dataframe(filtered_df.head(100))
 
+            # Column selection and download (private)
             display_df = filtered_df.copy()
-
-            # Column selection and download
             all_cols = display_df.columns.tolist()
             st.write(f"Columns available: {len(all_cols)}")
             with st.expander("Choose columns to include in the download (optional)"):
                 selected_cols = st.multiselect("Select columns", options=all_cols, default=all_cols)
                 download_df = display_df[selected_cols].copy() if selected_cols else display_df.copy()
-
             if "selected_cols" not in locals():
                 download_df = display_df.copy()
 
             today = datetime.now().strftime("%d-%m-%Y")
             unique_inds = download_df["Industry"].dropna().unique().tolist() if "Industry" in download_df.columns else []
             ind_for_name = unique_inds[0] if len(unique_inds) == 1 else "all-industries"
-            out_filename = f"{today}_{ind_for_name}_returns_with_stats.xlsx"
+            out_filename = f"{today}_{USERNAME}_{ind_for_name}_returns_with_stats.xlsx"
 
+            # Save per-user final master copy (optional)
             try:
-                final_df.to_excel("returns_with_stats.xlsx", index=False)
-            except Exception as e:
-                st.warning(f"Couldn't save returns_with_stats.xlsx locally: {e}")
+                atomic_save_excel(final_df, MASTER_PATH.replace(".xlsx", "_final.xlsx"))
+            except Exception:
+                pass
 
             towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine="xlsxwriter") as writer:
-                try:
-                    download_df.to_excel(writer, index=False, sheet_name="ReturnsWithStats")
-                    master_df.to_excel(writer, index=False, sheet_name="MasterRaw")
-                    pivot_with_stats.to_excel(writer, index=False, sheet_name="PivotStats")
-                except Exception as e:
-                    st.error(f"Failed to write sheets to Excel: {e}")
+            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                download_df.to_excel(writer, index=False, sheet_name="ReturnsWithStats")
+                master_df.to_excel(writer, index=False, sheet_name="MasterRaw")
+                pivot_with_stats.to_excel(writer, index=False, sheet_name="PivotStats")
             towrite.seek(0)
 
             st.download_button(
-                label=f"Download final Excel",
+                label=f"Download final Excel (private)",
                 data=towrite.getvalue(),
                 file_name=out_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-            st.success("Final Excel generated. 'returns_with_stats.xlsx' saved on server (if running locally).")
+            st.success("Generated your private Excel. Only you (your username) can access this master file on the server.")
 
-# ---------- Footer / tips ----------
+# Footer
 st.markdown("---")
-st.markdown(
-    "Notes:\n\n"
-    "- Uploaded files must contain a `Return over 1week` column and company `Name` column.\n"
-    "- If the uploaded filename contains a Week label (e.g. 'Week 5 - 31 May.xlsx'), the app will use that Week name. "
-    "You can also force a Week label for uploads using the text box above.\n"
-    "- When you upload a file for a Week already present in the master, the app replaces the old records for that Week (so the master always reflects the latest uploaded Excel for a Week).\n"
-    "- The app automatically includes the fundamentals listed in the UI if they exist in your master file. "
-)
-st.markdown("Run with: `streamlit run app.py`")
+st.caption("Note: This local auth system stores salted SHA-256 hashes in users.json. For production, use OAuth/providers and DB storage.")
