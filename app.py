@@ -502,6 +502,12 @@ if st.button("Process Uploads"):
 st.header("Raw Data")
 
 # --- Debug after reload ---
+
+
+# 🚨 Reload fresh from Supabase to avoid stale local copy
+st.session_state.master_df = load_master_for_user(MASTER_PATH)
+master_df = st.session_state.master_df
+
 st.write("Loaded master path:", MASTER_PATH)
 st.write("Loaded master shape:", master_df.shape)
 if not master_df.empty:
