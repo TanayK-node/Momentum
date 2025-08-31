@@ -14,7 +14,8 @@ from io import BytesIO
 # ----------------- CONFIG -----------------
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") 
+#SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") 
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") 
 USERS_FILE = "users.json"   # stores {"username": "salt$hexdigest", ...}
 DATA_DIR = "."              # directory where user masters are stored (use absolute path if needed)
 
@@ -304,22 +305,33 @@ def clean_and_coerce_numeric(series: pd.Series):
     return coerced
 
 # ---------- Per-user master load/save ----------
-def load_master_for_user(path):
-    if os.path.exists(path):
-        try:
-            m = pd.read_excel(path)
-            return clean_column_names(m)
-        except Exception as e:
-            st.error(f"Failed to read your master file: {e}")
-            return pd.DataFrame()
-    return pd.DataFrame()
-
-def save_master_for_user(df, path):
+def load_master_for_user(path: str) -> pd.DataFrame:
+    """
+    Load the user's master Excel file from Supabase Storage.
+    If not found, create an empty one with default columns.
+    """
     try:
-        df.to_excel(path, index=False)
-        print(f"✅ Master saved at {path} with shape {df.shape}")
-    except Exception as e:
-        print(f"❌ Failed to save master: {e}")
+        file = supabase.storage.from_("masters").download(path)
+        buffer = BytesIO(file)
+        df = pd.read_excel(buffer, engine="openpyxl")
+        return df
+    except Exception:
+        # create empty master if not found
+        df = pd.DataFrame(columns=["Name", "Week"])  # customize columns
+        save_master_for_user(df, path)
+        return df
+
+def save_master_for_user(master_df, path):
+    # Save dataframe to Excel in memory
+    file_bytes = io.BytesIO()
+    master_df.to_excel(file_bytes, index=False)
+    file_bytes.seek(0)
+
+    # Always update the same master file (overwrite with appended data)
+    supabase.storage.from_("masters").update(
+        path,
+        file_bytes.read()
+    )
 
 def make_pivot_from_master(master_df: pd.DataFrame):
     # Require Name, Week, and Return over 1week
@@ -502,7 +514,7 @@ else:
             today = datetime.now().strftime("%d-%m-%Y")
             unique_inds = download_df["Industry"].dropna().unique().tolist() if "Industry" in download_df.columns else []
             ind_for_name = unique_inds[0] if len(unique_inds) == 1 else "all-industries"
-            out_filename = f"{today}_{USERNAME}_{ind_for_name}_returns_with_stats.xlsx"
+            out_filename = f"{today}_returns_with_stats.xlsx"
 
             # Save per-user final master copy (optional)
             try:
