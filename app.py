@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 from io import BytesIO
 # ----------------- CONFIG -----------------
 load_dotenv()
-SUPABASE_URL = st.secrets("SUPABASE_URL")
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
 #SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") 
-SUPABASE_KEY = st.secrets("SUPABASE_SERVICE_KEY") 
+SUPABASE_KEY = st.secrets["SUPABASE_SERVICE_KEY"] 
 USERS_FILE = "users.json"   # stores {"username": "salt$hexdigest", ...}
 DATA_DIR = "."              # directory where user masters are stored (use absolute path if needed)
 
