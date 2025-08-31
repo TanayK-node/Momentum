@@ -360,7 +360,6 @@ def clean_and_coerce_numeric(series: pd.Series):
     return coerced
 
 # ---------- Per-user master load/save ----------
-@st.cache_data(ttl=60)  # cache valid only 60 seconds
 def load_master_for_user(path: str) -> pd.DataFrame:
     """
     Load the user's master Excel file from Supabase Storage.
