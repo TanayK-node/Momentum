@@ -8,11 +8,16 @@ import os
 import json
 import hashlib
 from datetime import datetime
-
+from supabase import create_client
+from dotenv import load_dotenv
 # ----------------- CONFIG -----------------
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") 
 USERS_FILE = "users.json"   # stores {"username": "salt$hexdigest", ...}
 DATA_DIR = "."              # directory where user masters are stored (use absolute path if needed)
 
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ----------------- Utils: auth & users -----------------
 def load_users():
     if os.path.exists(USERS_FILE):
@@ -72,6 +77,42 @@ def atomic_save_excel(df: pd.DataFrame, path: str):
     df.to_excel(tmp, index=False)
     os.replace(tmp, path)  # atomic on most OSes
 
+
+def user_master_path(user_id: str) -> str:
+    return f"{user_id}/master.json"   # inside 'masters' bucket
+
+def get_or_create_master(user_id: str, username: str):
+    path = user_master_path(user_id)
+
+    # Step 1: Check DB
+    existing = supabase.table("masters").select("*").eq("user_id", user_id).execute()
+
+    if existing.data:
+        # Fetch from storage
+        file = supabase.storage.from_("masters").download(path)
+        return file, path   # ✅ return both
+
+    else:
+        # Step 2: Create in storage (only if not exists)
+        initial_content = b"{}"
+
+        supabase.storage.from_("masters").upload(
+            path,
+            initial_content,
+            {"upsert": False}
+        )
+
+        # Step 3: Insert into DB
+        supabase.table("masters").insert({
+            "user_id": user_id,
+            "filename": "master.json",
+            "storage_path": path,
+            "uploaded_at": datetime.utcnow().isoformat()
+        }).execute()
+
+        return initial_content, path   # ✅ return both
+
+
 # ----------------- App UI: login/register -----------------
 st.set_page_config(page_title="Momentum Investing", layout="wide")
 st.title("Momentum Investing ")
@@ -85,49 +126,74 @@ users = load_users()
 mode = st.sidebar.radio("Action", ["Login", "Register"])
 
 if mode == "Register":
-    ru = st.sidebar.text_input("Choose username (alphanumeric, -, _ allowed)")
-    rp = st.sidebar.text_input("Choose password", type="password")
-    rp2 = st.sidebar.text_input("Confirm password", type="password")
+    email = st.sidebar.text_input("Email")
+    password = st.sidebar.text_input("Password", type="password")
+    password2 = st.sidebar.text_input("Confirm Password", type="password")
+
     if st.sidebar.button("Register"):
-        if not ru or not rp:
-            st.sidebar.warning("Enter username and password.")
-        elif rp != rp2:
+        if not email or not password:
+            st.sidebar.warning("Enter email and password.")
+        elif password != password2:
             st.sidebar.error("Passwords do not match.")
         else:
-            ok, msg = create_user(ru, rp)
-            if ok:
-                st.sidebar.success(msg + ". You can now login.")
-            else:
-                st.sidebar.error(msg)
-    st.sidebar.markdown("---")
-    st.sidebar.info("This registers a local user on the server. For production, use OAuth or a proper auth provider.")
+            try:
+                auth_response = supabase.auth.sign_up({"email": email, "password": password})
+                if auth_response.user:
+                # ✅ only set session state here
+                    st.session_state.user = auth_response.user
+                else:
+                    st.sidebar.error("Registration failed.")
+            except Exception as e:
+                st.sidebar.error(str(e))
 
 else:  # Login
-    lu = st.sidebar.text_input("Username")
-    lp = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        if not lu or not lp:
-            st.sidebar.warning("Provide username and password.")
-        else:
-            if authenticate_user(lu, lp):
-                st.session_state.user = sanitize_username(lu)
-                st.sidebar.success(f"Logged in as {st.session_state.user}")
-            else:
-                st.sidebar.error("Invalid credentials.")
+    email = st.sidebar.text_input("Email")
+    password = st.sidebar.text_input("Password", type="password")
 
-# If not logged in, show a message and stop here
-if not st.session_state.user:
-    st.info("You must register and login in the sidebar to access your private data.")
+    if st.sidebar.button("Login"):
+        if not email or not password:
+            st.sidebar.warning("Provide email and password.")
+        else:
+            try:
+                auth_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                if auth_response.user:
+                    st.session_state.user = auth_response.user.email
+                    st.sidebar.success(f"Logged in as {st.session_state.user}")
+                else:
+                    st.sidebar.error("Invalid credentials.")
+            except Exception as e:
+                st.sidebar.error(str(e))
+
+# If not logged in, show a message and stop
+if "user" not in st.session_state or not st.session_state.user:
+    st.info("You must login via Supabase in the sidebar to access your private data.")
     st.stop()
 
+
 # ----------------- After login: use per-user master file -----------------
-USERNAME = st.session_state.user
-MASTER_PATH = user_master_path(USERNAME)
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# After successful login:   
+#st.session_state.user = auth_response.user
+USER_ID = st.session_state.user.id   # unique UUID
+
+if "user" in st.session_state and st.session_state.user:
+    user = st.session_state.user
+    user_id = user.id   # UUID from Supabase Auth
+    username = user.email  # optional if you want display
+    MASTER_PATH = user_master_path(user_id) 
+    
+    master_data = get_or_create_master(user_id, username)
+    st.success(f"Loaded master for {username}")
+
+
+
 
 st.sidebar.markdown("---")
-st.sidebar.write(f"Signed in as **{USERNAME}**")
+st.sidebar.write(f"Signed in as **{USER_ID}**")
 st.sidebar.write("Your master file (private to you) will be:")
-st.sidebar.code(MASTER_PATH)
+#st.sidebar.code(MASTER_PATH)
 
 # ----------------- Rest of your app (unchanged logic, but per-user master) -----------------
 # ---------- Utilities ----------
