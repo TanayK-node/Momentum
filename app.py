@@ -79,7 +79,7 @@ def atomic_save_excel(df: pd.DataFrame, path: str):
 
 
 def user_master_path(user_id: str) -> str:
-    return f"{user_id}/master.json"   # inside 'masters' bucket
+    return f"{user_id}/master.xlsx"   # inside 'masters' bucket
 
 def get_or_create_master(user_id: str, username: str):
     path = user_master_path(user_id)
@@ -139,8 +139,8 @@ if mode == "Register":
             try:
                 auth_response = supabase.auth.sign_up({"email": email, "password": password})
                 if auth_response.user:
-                # ✅ only set session state here
-                    st.session_state.user = auth_response.user
+                    st.session_state.user = auth_response.user   # ✅ save full object
+                    st.sidebar.success(f"Registered as {auth_response.user.email}")
                 else:
                     st.sidebar.error("Registration failed.")
             except Exception as e:
@@ -157,12 +157,13 @@ else:  # Login
             try:
                 auth_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
                 if auth_response.user:
-                    st.session_state.user = auth_response.user.email
-                    st.sidebar.success(f"Logged in as {st.session_state.user}")
+                    st.session_state.user = auth_response.user   # ✅ save full object
+                    st.sidebar.success(f"Logged in as {auth_response.user.email}")
                 else:
                     st.sidebar.error("Invalid credentials.")
             except Exception as e:
                 st.sidebar.error(str(e))
+
 
 # If not logged in, show a message and stop
 if "user" not in st.session_state or not st.session_state.user:
