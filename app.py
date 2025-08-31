@@ -10,6 +10,7 @@ import hashlib
 from datetime import datetime
 from supabase import create_client
 from dotenv import load_dotenv
+from io import BytesIO
 # ----------------- CONFIG -----------------
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -80,37 +81,62 @@ def atomic_save_excel(df: pd.DataFrame, path: str):
 
 def user_master_path(user_id: str) -> str:
     return f"{user_id}/master.xlsx"   # inside 'masters' bucket
+def create_empty_excel_in_supabase(path: str):
+    # Create an empty DataFrame with your desired structure
+    df = pd.DataFrame(columns=["Name", "Week"])  # adjust columns if needed
 
+    # Save to BytesIO buffer as Excel
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
+    buffer.seek(0)
+
+    # Upload to Supabase Storage
+    supabase.storage.from_("masters").upload(
+        path,
+        buffer.getvalue(),   # Excel file bytes
+        {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "upsert": False}
+    )
+    
 def get_or_create_master(user_id: str, username: str):
-    path = user_master_path(user_id)
+    path = user_master_path(user_id)  # e.g. f"{user_id}/master.xlsx"
 
-    # Step 1: Check DB
+    # Step 1: Check DB entry
     existing = supabase.table("masters").select("*").eq("user_id", user_id).execute()
 
     if existing.data:
-        # Fetch from storage
+        # ✅ Fetch existing Excel from storage
         file = supabase.storage.from_("masters").download(path)
-        return file, path   # ✅ return both
+        buffer = BytesIO(file)
+        df = pd.read_excel(buffer, engine="openpyxl")
+        return df, path   # return DataFrame + path
 
     else:
-        # Step 2: Create in storage (only if not exists)
-        initial_content = b"{}"
+        # ✅ Step 2: Create empty Excel in memory
+        df = pd.DataFrame(columns=["Name", "Week"])  # adjust columns for your use case
 
+        buffer = BytesIO()
+        df.to_excel(buffer, index=False, engine="openpyxl")
+        buffer.seek(0)
+
+        # Upload to Supabase Storage
         supabase.storage.from_("masters").upload(
             path,
-            initial_content,
-            {"upsert": False}
+            buffer.getvalue(),
+            {
+                "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "upsert": False
+            }
         )
 
-        # Step 3: Insert into DB
+        # ✅ Step 3: Insert into DB
         supabase.table("masters").insert({
             "user_id": user_id,
-            "filename": "master.json",
+            "filename": "master.xlsx",
             "storage_path": path,
             "uploaded_at": datetime.utcnow().isoformat()
         }).execute()
 
-        return initial_content, path   # ✅ return both
+        return df, path   # return empty DataFrame + path
 
 
 # ----------------- App UI: login/register -----------------
