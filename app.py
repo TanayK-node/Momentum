@@ -113,7 +113,62 @@ def get_or_create_master(user_id: str, username: str):
 
     else:
         # ✅ Step 2: Create empty Excel in memory
-        df = pd.DataFrame(columns=["Name", "Week"])  # adjust columns for your use case
+        df = pd.DataFrame(columns = [
+            "Name",
+            "BSE Code",
+            "NSE Code",
+            "Industry",
+            "Current Price",
+            "Market Capitalization",
+            "Price to book value",
+            "Return over 1day",
+            "Return over 1week",
+            "DII holding",
+            "FII holding",
+            "Industry PE",
+            "Price to Earning",
+            "YOY Quarterly profit growth",
+            "YOY Quarterly sales growth",
+            "QoQ EPS growth",
+            "QoQ Profits",
+            "QoQ Sales",
+            "2Qoq Sales",
+            "QoQ Op Profit growth",
+            "2QoQ op profit",
+            "Sales growth",
+            "Operating profit growth",
+            "Profit growth",
+            "Sales latest quarter",
+            "Net Profit latest quarter",
+            "Profit growth 3Years",
+            "Profit growth 5Years",
+            "Sales growth 3Years",
+            "Sales growth 5Years",
+            "52 week high",
+            "PEG Ratio",
+            "Interest Coverage Ratio",
+            "Current ratio",
+            "Return on assets",
+            "Debt to equity",
+            "Return on capital employed",
+            "Average return on capital employed 5Years",
+            "Return on equity",
+            "Average return on equity 5Years",
+            "Quick ratio",
+            "Net Debt",
+            "OPM last year",
+            "Expense Margin",
+            "Market Cap to Sales",
+            "MCAP by FCF",
+            "EPS",
+            "EPS growth 3Years",
+            "EPS growth 5Years",
+            "OPM latest quarter",
+            "NPM latest quarter",
+            "Free cash flow last year",
+            "EVEBITDA",
+            "Week"  # 👈 keep Week at the end
+        ])  # adjust columns for your use case
 
         buffer = BytesIO()
         df.to_excel(buffer, index=False, engine="openpyxl")
@@ -332,6 +387,7 @@ def save_master_for_user(master_df, path):
         path,
         file_bytes.read()
     )
+    
 
 def make_pivot_from_master(master_df: pd.DataFrame):
     # Require Name, Week, and Return over 1week
@@ -514,7 +570,7 @@ else:
             today = datetime.now().strftime("%d-%m-%Y")
             unique_inds = download_df["Industry"].dropna().unique().tolist() if "Industry" in download_df.columns else []
             ind_for_name = unique_inds[0] if len(unique_inds) == 1 else "all-industries"
-            out_filename = f"{today}_returns_with_stats.xlsx"
+            out_filename = f"{today}_analysis.xlsx"
 
             # Save per-user final master copy (optional)
             try:
