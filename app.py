@@ -275,7 +275,6 @@ if "user" in st.session_state and st.session_state.user:
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"Signed in as **{USER_ID}**")
-st.sidebar.write("Your master file (private to you) will be:")
 #st.sidebar.code(MASTER_PATH)
 
 # ----------------- Rest of your app (unchanged logic, but per-user master) -----------------
@@ -408,6 +407,26 @@ def make_pivot_from_master(master_df: pd.DataFrame):
     return clean_column_names(pivot)
 
 # ---------- App functionality (same as before) ----------
+if "master_df" not in st.session_state:
+    st.session_state.master_df = load_master_for_user(MASTER_PATH)  # ← from Supabase
+    if st.session_state.master_df is None:
+        # Initialize empty DataFrame with your desired columns
+        st.session_state.master_df = pd.DataFrame(columns=[
+            "Name","BSE Code","NSE Code","Industry","Current Price","Market Capitalization",
+            "Price to book value","Return over 1day","Return over 1week","DII holding","FII holding",
+            "Industry PE","Price to Earning","YOY Quarterly profit growth","YOY Quarterly sales growth",
+            "QoQ EPS growth","QoQ Profits","QoQ Sales","2Qoq Sales","QoQ Op Profit growth","2QoQ op profit",
+            "Sales growth","Operating profit growth","Profit growth","Sales latest quarter","Net Profit latest quarter",
+            "Profit growth 3Years","Profit growth 5Years","Sales growth 3Years","Sales growth 5Years",
+            "52 week high","PEG Ratio","Interest Coverage Ratio","Current ratio","Return on assets",
+            "Debt to equity","Return on capital employed","Average return on capital employed 5Years",
+            "Return on equity","Average return on equity 5Years","Quick ratio","Net Debt","OPM last year",
+            "Expense Margin","Market Cap to Sales","MCAP by FCF","EPS","EPS growth 3Years","EPS growth 5Years",
+            "OPM latest quarter","NPM latest quarter","Free cash flow last year","EVEBITDA","Week"
+        ])
+
+
+
 st.markdown("---")
 st.header("Upload weekly Excel file(s)")
 st.markdown("Upload one or more weekly Excel files. Each user's uploads are stored privately in their own master file.")
@@ -592,8 +611,8 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-            st.success("Generated your private Excel. Only you (your username) can access this master file on the server.")
+            st.success("Generated your private Excel. Only you (your username) can access this master file.")
 
 # Footer
 st.markdown("---")
-st.caption("Note: This local auth system stores salted SHA-256 hashes in users.json. For production, use OAuth/providers and DB storage.")
+
