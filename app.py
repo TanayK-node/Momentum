@@ -11,12 +11,14 @@ from datetime import datetime
 from supabase import create_client
 from dotenv import load_dotenv
 from io import BytesIO
+import time
 # ----------------- CONFIG -----------------
 
 load_dotenv()
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
-#SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") 
 SUPABASE_KEY = st.secrets["SUPABASE_SERVICE_KEY"] 
+#SUPABASE_URL = os.getenv("SUPABASE_URL")
+#SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") 
 USERS_FILE = "users.json"   # stores {"username": "salt$hexdigest", ...}
 DATA_DIR = "."              # directory where user masters are stored (use absolute path if needed)
 
@@ -376,17 +378,25 @@ def load_master_for_user(path: str) -> pd.DataFrame:
         save_master_for_user(df, path)
         return df
 
-def save_master_for_user(master_df, path):
-    # Save dataframe to Excel in memory
-    file_bytes = io.BytesIO()
-    master_df.to_excel(file_bytes, index=False)
-    file_bytes.seek(0)
+def save_master_for_user(master_df: pd.DataFrame, path: str):
+    try:
+        file_bytes = io.BytesIO()
+        # Use openpyxl engine to ensure consistent Excel format
+        master_df.to_excel(file_bytes, index=False, engine="openpyxl")
+        file_bytes.seek(0)
+        # Use upload with upsert so file is reliably overwritten (or created)
+        supabase.storage.from_("masters").update(
+            path,
+            file_bytes.getvalue(),
+            {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+        )
+        # Immediately update session_state so UI shows new data without re-download
+        st.session_state.master_df = master_df.copy()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save master to Supabase: {e}")
+        return False
 
-    # Always update the same master file (overwrite with appended data)
-    supabase.storage.from_("masters").update(
-        path,
-        file_bytes.read()
-    )
     
 
 def make_pivot_from_master(master_df: pd.DataFrame):
@@ -442,11 +452,12 @@ if st.button("Process Uploads"):
     if not uploaded_files:
         st.warning("Please upload at least one .xlsx file.")
     else:
+        # Use the session_state master_df as the source of truth if present
+        master_df = st.session_state.get("master_df", pd.DataFrame(columns=["Name", "Week"]))
         new_rows = []
         replaced_weeks = []
         for uploaded in uploaded_files:
             try:
-                # --- Load Excel robustly (all sheets) ---
                 dfs = pd.read_excel(uploaded, sheet_name=None)  # dict of {sheet_name: DataFrame}
                 df = None
                 for sheetname, sheetdf in dfs.items():
@@ -488,16 +499,21 @@ if st.button("Process Uploads"):
             st.write("Saving master with shape:", master_df.shape)
             st.dataframe(master_df.head())
 
-            save_master_for_user(master_df, MASTER_PATH)
+            saved = save_master_for_user(master_df, MASTER_PATH)
+            if not saved:
+                st.error("Failed to save master to Supabase. Please check logs.")
+            else:
+                # Don't st.rerun() — session_state already contains latest data
+                st.success(
+                    f"Your master updated. Replaced weeks: {replaced_weeks}" if replaced_weeks else "Master updated (new weeks appended)."
+                )
 
-            # --- Debug file existence ---
-            st.write("Saved master file:", MASTER_PATH, "Exists:", os.path.exists(MASTER_PATH))
+            # Optional: small delay *only for debugging* (not required)
+            # time.sleep(0.5)
 
-            st.success(
-                f"Your master updated. Replaced weeks: {replaced_weeks}" if replaced_weeks else "Master updated (new weeks appended)."
-            )
-            st.rerun()
-
+# --- After upload block the UI should continue, using session_state.master_df ---
+# Force local master_df variable to the up-to-date session copy
+master_df = st.session_state.get("master_df", load_master_for_user(MASTER_PATH))
 # ----------------- After reload -----------------
 st.header("Raw Data")
 
@@ -505,13 +521,14 @@ st.header("Raw Data")
 
 
 # 🚨 Reload fresh from Supabase to avoid stale local copy
-st.session_state.master_df = load_master_for_user(MASTER_PATH)
+time.sleep(5)
 master_df = st.session_state.master_df
-
 st.write("Loaded master path:", MASTER_PATH)
 st.write("Loaded master shape:", master_df.shape)
-if not master_df.empty:
-    st.dataframe(master_df.head())
+
+#st.write("Loaded master shape:", master_df.shape)
+#if not master_df.empty:
+    #st.dataframe(master_df.head())
 st.header("Stats from your private master")
 
 if master_df.empty:
